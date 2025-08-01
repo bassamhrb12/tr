@@ -14,7 +14,6 @@ import os
 import logging
 from functools import wraps
 import asyncio
-import uuid
 from thefuzz import process
 import pytesseract
 from PIL import Image
@@ -31,10 +30,7 @@ QUESTIONS_FILE = 'questions.json'
 QUESTIONS_PER_PAGE = 5
 
 # تعريف حالات المحادثات
-(ADD_QUESTION, ADD_ANSWER) = range(2)
-(PHOTO_RECEIVE, PHOTO_QUESTION, PHOTO_ANSWER) = range(2, 5)
-(DELETE_CHOICE) = range(5, 6)
-(PANEL_ROUTES) = range(6, 7)
+(PANEL_ROUTES, ADD_QUESTION, ADD_ANSWER, PHOTO_RECEIVE, PHOTO_QUESTION, PHOTO_ANSWER, DELETE_CHOICE) = range(7)
 
 # --- Decorator للتحقق من الآدمن ---
 def admin_only(func):
@@ -103,7 +99,7 @@ async def handle_regular_question(update: Update, context: ContextTypes.DEFAULT_
 
 # --- لوحة تحكم الآدمن الاحترافية ---
 @admin_only
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
         [
             InlineKeyboardButton("➕ إضافة نصية", callback_data='admin_add_start'),
@@ -114,26 +110,17 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✖️ إغلاق", callback_data='admin_close')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        await update.callback_query.edit_message_text("⚙️ **لوحة تحكم الآدمن** ⚙️\n\nاختر الإجراء المطلوب:", reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text("⚙️ **لوحة تحكم الآدمن** ⚙️\n\nاختر الإجراء المطلوب:", reply_markup=reply_markup, parse_mode='Markdown')
-    return PANEL_ROUTES
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
     
-    parts = query.data.split('_')
-    action = parts[1] if len(parts) > 1 else None
-    value = parts[2] if len(parts) > 2 else None
-
-    if action == 'list':
-        await list_questions(update, context, page=int(value))
-        return PANEL_ROUTES
+    message_text = "⚙️ **لوحة تحكم الآدمن** ⚙️\n\nاختر الإجراء المطلوب:"
+    
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
     return PANEL_ROUTES
 
-# --- دالة إغلاق اللوحة (تمت إضافتها هنا) ---
 async def close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -142,19 +129,22 @@ async def close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 # --- عرض الأسئلة بنظام الصفحات ---
 @admin_only
-async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    page = int(query.data.split('_')[2])
     data = load_data()
     questions = list(data.items())
     if not questions:
         await query.edit_message_text("الأرشيف فارغ حالياً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data='admin_back_to_panel')]]))
-        return
+        return PANEL_ROUTES
+
     start_index = page * QUESTIONS_PER_PAGE
     end_index = start_index + QUESTIONS_PER_PAGE
     paginated_questions = questions[start_index:end_index]
     message = "📖 **الأسئلة الموجودة (صفحة " + str(page + 1) + "):**\n\n"
     for i, (q, a) in enumerate(paginated_questions, start_index + 1):
         message += f"**{i}. س:** {q}\n**ج:** {a}\n---\n"
+    
     keyboard = []
     row = []
     if page > 0:
@@ -163,10 +153,11 @@ async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE, pag
         row.append(InlineKeyboardButton("التالي ▶️", callback_data=f'admin_list_{page + 1}'))
     keyboard.append(row)
     keyboard.append([InlineKeyboardButton("🔙 رجوع للوحة التحكم", callback_data='admin_back_to_panel')])
+    
     await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return PANEL_ROUTES
 
-# --- باقي دوال ومحادثات الآدمن ---
-
+# --- محادثات الآدمن ---
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -182,16 +173,15 @@ async def add_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     question = context.user_data.get('new_question')
     if not question:
         await update.message.reply_text("حدث خطأ، لم يتم العثور على السؤال. تم إلغاء العملية.")
-        await admin_panel(update, context)
-        return ConversationHandler.END
+        return await admin_panel(update, context)
+
     answer = update.message.text
     data = load_data()
     data[question] = answer
     save_data(data)
     await update.message.reply_text(f"✅ تم حفظ السؤال بنجاح!")
     context.user_data.clear()
-    await admin_panel(update, context)
-    return ConversationHandler.END
+    return await admin_panel(update, context)
 
 async def photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -208,14 +198,13 @@ async def photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         extracted_text = pytesseract.image_to_string(Image.open(photo_path), lang='ara+eng')
         if not extracted_text.strip():
             await update.message.reply_text('لم أتمكن من قراءة أي نص. حاول بصورة أوضح. تم إلغاء العملية.')
-            await admin_panel(update, context)
-            return ConversationHandler.END
+            return await admin_panel(update, context)
         await update.message.reply_text(f"النص المستخرج:\n---\n{extracted_text}\n---\n\nالآن، أرسل السؤال الصحيح.")
         return PHOTO_QUESTION
     except Exception as e:
         logging.error(f"OCR Error: {e}")
         await update.message.reply_text('حدث خطأ أثناء قراءة الصورة. تم إلغاء العملية.')
-        return ConversationHandler.END
+        return await admin_panel(update, context)
     finally:
         if os.path.exists(photo_path):
             os.remove(photo_path)
@@ -231,12 +220,12 @@ async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     data = load_data()
     if not data:
         await query.edit_message_text("الأرشيف فارغ، لا يوجد ما يمكن حذفه.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data='admin_back_to_panel')]]))
-        return ConversationHandler.END
+        return PANEL_ROUTES
     
     keyboard = []
     for q in data.keys():
         callback_data_q = (q[:50] + '..') if len(q) > 52 else q
-        keyboard.append([InlineKeyboardButton(q, callback_data=f"admin_delete_confirm_{callback_data_q}")])
+        keyboard.append([InlineKeyboardButton(q, callback_data=f"del_confirm_{callback_data_q}")])
     keyboard.append([InlineKeyboardButton("🔙 إلغاء والرجوع", callback_data='admin_back_to_panel')])
     
     await query.edit_message_text("اختر السؤال الذي تريد حذفه:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -245,16 +234,12 @@ async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def delete_get_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    question_to_delete_prefix = query.data.replace('admin_delete_confirm_', '')
+    question_to_delete_prefix = query.data.replace('del_confirm_', '')
 
     data = load_data()
-    full_question_key = ""
-    for q_key in data.keys():
-        if q_key.startswith(question_to_delete_prefix):
-            full_question_key = q_key
-            break
+    full_question_key = next((q_key for q_key in data if q_key.startswith(question_to_delete_prefix)), None)
             
-    if full_question_key and full_question_key in data:
+    if full_question_key:
         del data[full_question_key]
         save_data(data)
         await query.edit_message_text(f"🗑️ تم حذف السؤال بنجاح!")
@@ -262,15 +247,13 @@ async def delete_get_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(f"حدث خطأ، لم يتم العثور على السؤال للحذف.")
 
     await asyncio.sleep(2)
-    await admin_panel(update, context)
-    return ConversationHandler.END
+    return await admin_panel(update, context)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if context.user_data:
         context.user_data.clear()
     await update.message.reply_text('تم إلغاء العملية الحالية.')
-    await admin_panel(update, context)
-    return ConversationHandler.END
+    return await admin_panel(update, context)
 
 # --- كتلة التنفيذ الرئيسية ---
 def main():
@@ -288,24 +271,25 @@ def main():
                 CallbackQueryHandler(delete_start, pattern='^admin_delete_start$'),
                 CallbackQueryHandler(add_start, pattern='^admin_add_start$'),
                 CallbackQueryHandler(photo_start, pattern='^admin_photo_start$'),
-                CallbackQueryHandler(close_panel, pattern='^admin_close$'), # تم تعريف الدالة الآن
+                CallbackQueryHandler(close_panel, pattern='^admin_close$'),
                 CallbackQueryHandler(admin_panel, pattern='^admin_back_to_panel$'),
             ],
-            DELETE_CHOICE: [CallbackQueryHandler(delete_get_choice, pattern='^admin_delete_confirm_')],
+            DELETE_CHOICE: [CallbackQueryHandler(delete_get_choice, pattern='^del_confirm_')],
             ADD_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_question)],
             ADD_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_answer)],
             PHOTO_RECEIVE: [MessageHandler(filters.PHOTO, photo_receive)],
             PHOTO_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, photo_get_question)],
             PHOTO_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_answer)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('admin', admin_panel)],
+        fallbacks=[CommandHandler('cancel', cancel)],
+        per_message=False
     )
 
     application.add_handler(admin_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_question))
     
-    print("بوت بسام يعمل الآن بالنسخة المصححة...")
+    print("بوت بسام يعمل الآن بالهيكلة الجديدة والمستقرة...")
     application.run_polling()
 
 if __name__ == '__main__':
