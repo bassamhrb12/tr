@@ -17,6 +17,7 @@ import asyncio
 from thefuzz import process
 import pytesseract
 from PIL import Image
+from datetime import datetime
 
 # --- الإعدادات ---
 logging.basicConfig(
@@ -27,6 +28,7 @@ logging.basicConfig(
 ADMIN_ID = 720330522
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 QUESTIONS_FILE = 'questions.json'
+STATS_FILE = 'stats.json' # ملف جديد للإحصائيات
 QUESTIONS_PER_PAGE = 5
 
 # تعريف حالات المحادثات
@@ -46,32 +48,40 @@ def admin_only(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-# --- وظائف مساعدة للتعامل مع ملف JSON ---
-def load_data():
+# --- وظائف مساعدة للتعامل مع ملفات JSON ---
+def load_data(file_path, default_data={}):
     try:
-        if not os.path.exists(QUESTIONS_FILE):
-            with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
-                json.dump({}, f)
-        with open(QUESTIONS_FILE, 'r', encoding='utf-8') as f:
+        if not os.path.exists(file_path):
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(default_data, f)
+        with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (json.JSONDecodeError, FileNotFoundError) as e:
-        logging.error(f"Error loading data file: {e}")
-        return {}
+        logging.error(f"Error loading {file_path}: {e}")
+        return default_data
 
-def save_data(data):
+def save_data(data, file_path):
     try:
-        with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
+        with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        logging.error(f"Error saving data file: {e}")
+        logging.error(f"Error saving {file_path}: {e}")
 
 # --- أوامر المستخدمين ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # تحديث إحصائيات المستخدمين
+    stats = load_data(STATS_FILE, default_data={"users": [], "last_added": "N/A"})
+    if user_id not in stats["users"]:
+        stats["users"].append(user_id)
+        save_data(stats, STATS_FILE)
+
     welcome_message = (
         "أهلاً بك! أنا بوت بسام لمساعدتك في حل أسئلة بارنز كافيه. أرسل لي أي سؤال."
         "\n\n---\n*إذا استفدت من البوت، فلا تنساني ووالديّ من صالح دعائك.*"
     )
-    if update.effective_user.id == ADMIN_ID:
+    if user_id == ADMIN_ID:
         welcome_message += "\n\nبصفتك الآدمن، استخدم /admin لعرض لوحة التحكم."
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
@@ -80,7 +90,7 @@ async def handle_regular_question(update: Update, context: ContextTypes.DEFAULT_
     processing_message = await update.message.reply_text("⏳ جاري البحث عن إجابة...")
     await asyncio.sleep(1)
 
-    data = load_data()
+    data = load_data(QUESTIONS_FILE)
     if not data:
         await processing_message.edit_text("عذراً، قاعدة البيانات فارغة حالياً.")
         return
@@ -107,6 +117,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         ],
         [InlineKeyboardButton("📖 عرض كل الأسئلة", callback_data='admin_list_0')],
         [InlineKeyboardButton("🗑️ حذف سؤال", callback_data='admin_delete_start')],
+        [InlineKeyboardButton("📊 عرض الإحصائيات", callback_data='admin_stats')],
         [InlineKeyboardButton("✖️ إغلاق", callback_data='admin_close')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -121,18 +132,41 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         
     return PANEL_ROUTES
 
+# --- دوال الأزرار ---
 async def close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("تم إغلاق لوحة التحكم.")
     return ConversationHandler.END
 
-# --- عرض الأسئلة بنظام الصفحات ---
+@admin_only
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    questions = load_data(QUESTIONS_FILE)
+    stats = load_data(STATS_FILE, default_data={"users": [], "last_added": "N/A"})
+
+    stats_text = (
+        f"📊 **إحصائيات البوت** 📊\n\n"
+        f"🔸 **إجمالي الأسئلة:** {len(questions)}\n"
+        f"👤 **إجمالي المستخدمين:** {len(stats['users'])}\n"
+        f"📅 **آخر إضافة سؤال:** {stats['last_added']}"
+    )
+    
+    keyboard = [[InlineKeyboardButton("🔙 رجوع للوحة التحكم", callback_data='admin_back_to_panel')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(stats_text, reply_markup=reply_markup, parse_mode='Markdown')
+    return PANEL_ROUTES
+
+# --- باقي دوال ومحادثات الآدمن ---
+# ... (الكود يبقى كما هو) ...
 @admin_only
 async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     page = int(query.data.split('_')[2])
-    data = load_data()
+    data = load_data(QUESTIONS_FILE)
     questions = list(data.items())
     if not questions:
         await query.edit_message_text("الأرشيف فارغ حالياً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data='admin_back_to_panel')]]))
@@ -157,7 +191,6 @@ async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     return PANEL_ROUTES
 
-# --- محادثات الآدمن ---
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -176,9 +209,15 @@ async def add_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await admin_panel(update, context)
 
     answer = update.message.text
-    data = load_data()
-    data[question] = answer
-    save_data(data)
+    questions_data = load_data(QUESTIONS_FILE)
+    questions_data[question] = answer
+    save_data(questions_data, QUESTIONS_FILE)
+
+    # تحديث إحصائيات آخر إضافة
+    stats_data = load_data(STATS_FILE, default_data={"users": [], "last_added": "N/A"})
+    stats_data["last_added"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_data(stats_data, STATS_FILE)
+
     await update.message.reply_text(f"✅ تم حفظ السؤال بنجاح!")
     context.user_data.clear()
     return await admin_panel(update, context)
@@ -217,7 +256,7 @@ async def photo_get_question(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    data = load_data()
+    data = load_data(QUESTIONS_FILE)
     if not data:
         await query.edit_message_text("الأرشيف فارغ، لا يوجد ما يمكن حذفه.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data='admin_back_to_panel')]]))
         return PANEL_ROUTES
@@ -236,12 +275,12 @@ async def delete_get_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     question_to_delete_prefix = query.data.replace('del_confirm_', '')
 
-    data = load_data()
+    data = load_data(QUESTIONS_FILE)
     full_question_key = next((q_key for q_key in data if q_key.startswith(question_to_delete_prefix)), None)
             
     if full_question_key:
         del data[full_question_key]
-        save_data(data)
+        save_data(data, QUESTIONS_FILE)
         await query.edit_message_text(f"🗑️ تم حذف السؤال بنجاح!")
     else:
         await query.edit_message_text(f"حدث خطأ، لم يتم العثور على السؤال للحذف.")
@@ -271,6 +310,7 @@ def main():
                 CallbackQueryHandler(delete_start, pattern='^admin_delete_start$'),
                 CallbackQueryHandler(add_start, pattern='^admin_add_start$'),
                 CallbackQueryHandler(photo_start, pattern='^admin_photo_start$'),
+                CallbackQueryHandler(show_stats, pattern='^admin_stats$'), # تمت إضافة زر الإحصائيات
                 CallbackQueryHandler(close_panel, pattern='^admin_close$'),
                 CallbackQueryHandler(admin_panel, pattern='^admin_back_to_panel$'),
             ],
@@ -289,7 +329,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_question))
     
-    print("بوت بسام يعمل الآن بالهيكلة الجديدة والمستقرة...")
+    print("بوت بسام يعمل الآن مع خاصية الإحصائيات...")
     application.run_polling()
 
 if __name__ == '__main__':
