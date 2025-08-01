@@ -12,6 +12,9 @@ import json
 import os
 import logging
 from functools import wraps
+import asyncio
+import pytesseract
+from PIL import Image
 
 # --- الإعدادات ---
 logging.basicConfig(
@@ -19,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# !! هام: استبدل الرقم صفر برقم الـ ID الخاص بك !!
+# !! تم وضع رقم الآدمن الخاص بك هنا مباشرة !!
 ADMIN_ID = 720330522 
 
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -63,17 +66,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_regular_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     question = update.message.text.strip()
+
+    # إرسال رسالة "جاري البحث"
+    processing_message = await update.message.reply_text("⏳ جاري البحث عن إجابة...")
+    await asyncio.sleep(1.5)  # تأخير بسيط لمحاكاة البحث
+
+    # البحث في الأرشيف
     data = load_data()
-    
     for q, a in data.items():
         if question.lower() in q.lower() or q.lower() in question.lower():
-            await update.message.reply_text(f"من الأرشيف: {a}")
+            await processing_message.edit_text(a)
             return
 
+    # إذا لم يتم العثور على إجابة
     if user.id == ADMIN_ID:
-        await update.message.reply_text("هذا السؤال غير موجود. استخدم /add لإضافته نصياً، أو أرسل صورة السؤال مباشرة.")
+        not_found_message = "هذا السؤال غير موجود. استخدم /add لإضافته نصياً، أو أرسل صورة السؤال مباشرة."
     else:
-        await update.message.reply_text("عذراً، لم أجد إجابة لهذا السؤال في قاعدة بياناتي الحالية.")
+        not_found_message = "عذراً، لم أجد إجابة لهذا السؤال في قاعدة بياناتي الحالية."
+    
+    await processing_message.edit_text(not_found_message)
 
 # --- أوامر الآدمن ---
 
@@ -160,11 +171,10 @@ async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, (q, a) in enumerate(data.items(), 1):
         message += f"**{i}. السؤال:** {q}\n**الجواب:** {a}\n---\n"
     
-    # إرسال الرسالة في أجزاء إذا كانت طويلة جداً
     for i in range(0, len(message), 4096):
         await update.message.reply_text(message[i:i + 4096], parse_mode='Markdown')
 
-# --- محادثة إضافة سؤال من صورة (موجودة سابقاً) ---
+# --- محادثة إضافة سؤال من صورة ---
 @admin_only
 async def photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     photo_file = await update.message.photo[-1].get_file()
@@ -182,6 +192,8 @@ async def photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     except Exception as e:
         logging.error(f"OCR Error: {e}")
         await update.message.reply_text('حدث خطأ أثناء قراءة الصورة.')
+        if os.path.exists(photo_path):
+            os.remove(photo_path)
         return ConversationHandler.END
 
 async def photo_get_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -190,7 +202,14 @@ async def photo_get_question(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return PHOTO_ANSWER
 
 async def photo_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await add_get_answer(update, context) # Re-use the same final step
+    question = context.user_data['new_question']
+    answer = update.message.text
+    data = load_data()
+    data[question] = answer
+    save_data(data)
+    await update.message.reply_text(f"✅ تم حفظ السؤال بنجاح!")
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # --- إلغاء المحادثة ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -202,15 +221,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # --- كتلة التنفيذ الرئيسية ---
 def main():
     if not TOKEN:
-        print("خطأ: لم يتم العثور على توكن البوت.")
+        print("خطأ فادح: لم يتم العثور على توكن البوت.")
         return
-    if ADMIN_ID == 0:
-        print("خطأ: يجب تحديد رقم الآدمن (ADMIN_ID) في الشيفرة.")
-        return
-
+    
     application = Application.builder().token(TOKEN).build()
 
-    # محادثة الإضافة النصية
+    # --- تسجيل المعالجات ---
+    # المحادثات يجب أن تسجل أولاً
     add_conv = ConversationHandler(
         entry_points=[CommandHandler('add', add_start)],
         states={
@@ -220,7 +237,6 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)],
     )
 
-    # محادثة الإضافة من صورة
     photo_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, photo_start)],
         states={
@@ -230,7 +246,6 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)],
     )
 
-    # محادثة الحذف
     delete_conv = ConversationHandler(
         entry_points=[CommandHandler('delete', delete_start)],
         states={
@@ -238,14 +253,15 @@ def main():
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
-
-    # تسجيل كل الأوامر والمحادثات
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("adminhelp", admin_help))
-    application.add_handler(CommandHandler("list", list_questions))
+    
     application.add_handler(add_conv)
     application.add_handler(photo_conv)
     application.add_handler(delete_conv)
+    
+    # الأوامر البسيطة
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("adminhelp", admin_help))
+    application.add_handler(CommandHandler("list", list_questions))
     
     # معالج الرسائل العادية يجب أن يكون الأخير
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_question))
