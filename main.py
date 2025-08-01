@@ -28,7 +28,7 @@ logging.basicConfig(
 ADMIN_ID = 720330522
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 QUESTIONS_FILE = 'questions.json'
-STATS_FILE = 'stats.json' # ملف جديد للإحصائيات
+STATS_FILE = 'stats.json'
 QUESTIONS_PER_PAGE = 5
 
 # تعريف حالات المحادثات
@@ -70,8 +70,6 @@ def save_data(data, file_path):
 # --- أوامر المستخدمين ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    # تحديث إحصائيات المستخدمين
     stats = load_data(STATS_FILE, default_data={"users": [], "last_added": "N/A"})
     if user_id not in stats["users"]:
         stats["users"].append(user_id)
@@ -95,7 +93,8 @@ async def handle_regular_question(update: Update, context: ContextTypes.DEFAULT_
         await processing_message.edit_text("عذراً، قاعدة البيانات فارغة حالياً.")
         return
 
-    best_match = process.extractOne(question, data.keys(), score_cutoff=85)
+    # تم رفع دقة البحث إلى 90 لزيادة الدقة
+    best_match = process.extractOne(question, data.keys(), score_cutoff=90)
     
     if best_match:
         answer = data[best_match[0]]
@@ -161,7 +160,6 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return PANEL_ROUTES
 
 # --- باقي دوال ومحادثات الآدمن ---
-# ... (الكود يبقى كما هو) ...
 @admin_only
 async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -213,7 +211,6 @@ async def add_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     questions_data[question] = answer
     save_data(questions_data, QUESTIONS_FILE)
 
-    # تحديث إحصائيات آخر إضافة
     stats_data = load_data(STATS_FILE, default_data={"users": [], "last_added": "N/A"})
     stats_data["last_added"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_data(stats_data, STATS_FILE)
@@ -264,7 +261,7 @@ async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     keyboard = []
     for q in data.keys():
         callback_data_q = (q[:50] + '..') if len(q) > 52 else q
-        keyboard.append([InlineKeyboardButton(q, callback_data=f"del_confirm_{callback_data_q}")])
+        keyboard.append([InlineKeyboardButton(q, callback_data=f"admin_delete_confirm_{callback_data_q}")])
     keyboard.append([InlineKeyboardButton("🔙 إلغاء والرجوع", callback_data='admin_back_to_panel')])
     
     await query.edit_message_text("اختر السؤال الذي تريد حذفه:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -273,7 +270,7 @@ async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def delete_get_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    question_to_delete_prefix = query.data.replace('del_confirm_', '')
+    question_to_delete_prefix = query.data.replace('admin_delete_confirm_', '')
 
     data = load_data(QUESTIONS_FILE)
     full_question_key = next((q_key for q_key in data if q_key.startswith(question_to_delete_prefix)), None)
@@ -310,11 +307,11 @@ def main():
                 CallbackQueryHandler(delete_start, pattern='^admin_delete_start$'),
                 CallbackQueryHandler(add_start, pattern='^admin_add_start$'),
                 CallbackQueryHandler(photo_start, pattern='^admin_photo_start$'),
-                CallbackQueryHandler(show_stats, pattern='^admin_stats$'), # تمت إضافة زر الإحصائيات
+                CallbackQueryHandler(show_stats, pattern='^admin_stats$'),
                 CallbackQueryHandler(close_panel, pattern='^admin_close$'),
                 CallbackQueryHandler(admin_panel, pattern='^admin_back_to_panel$'),
             ],
-            DELETE_CHOICE: [CallbackQueryHandler(delete_get_choice, pattern='^del_confirm_')],
+            DELETE_CHOICE: [CallbackQueryHandler(delete_get_choice, pattern='^admin_delete_confirm_')],
             ADD_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_question)],
             ADD_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_answer)],
             PHOTO_RECEIVE: [MessageHandler(filters.PHOTO, photo_receive)],
@@ -329,7 +326,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_question))
     
-    print("بوت بسام يعمل الآن مع خاصية الإحصائيات...")
+    print("بوت بسام يعمل الآن بالنسخة النهائية والمستقرة...")
     application.run_polling()
 
 if __name__ == '__main__':
