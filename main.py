@@ -22,7 +22,7 @@ logging.basicConfig(
 )
 
 # !! هام: استبدل الرقم صفر برقم الـ ID الخاص بك الذي حصلت عليه !!
-ADMIN_ID = 0 
+ADMIN_ID = 720330522 
 
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 QUESTIONS_FILE = 'questions.json'
