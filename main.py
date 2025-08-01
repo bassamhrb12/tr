@@ -25,7 +25,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-ADMIN_ID = 720330522 
+ADMIN_ID = 720330522
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 QUESTIONS_FILE = 'questions.json'
 QUESTIONS_PER_PAGE = 5
@@ -52,15 +52,22 @@ def admin_only(func):
 
 # --- وظائف مساعدة للتعامل مع ملف JSON ---
 def load_data():
-    if not os.path.exists(QUESTIONS_FILE):
-        with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump({}, f)
-    with open(QUESTIONS_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        if not os.path.exists(QUESTIONS_FILE):
+            with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+        with open(QUESTIONS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError) as e:
+        logging.error(f"Error loading data file: {e}")
+        return {}
 
 def save_data(data):
-    with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    try:
+        with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"Error saving data file: {e}")
 
 # --- أوامر المستخدمين ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,20 +82,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_regular_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text.strip()
     processing_message = await update.message.reply_text("⏳ جاري البحث عن إجابة...")
-    await asyncio.sleep(1)
+    await asyncio.sleep(1) # تأخير بسيط لمحاكاة البحث
+
     data = load_data()
     if not data:
         await processing_message.edit_text("عذراً، قاعدة البيانات فارغة حالياً.")
         return
-    best_match = process.extractOne(question, data.keys(), score_cutoff=75)
+
+    # تم رفع دقة البحث إلى 85 لتقليل الإجابات العشوائية
+    best_match = process.extractOne(question, data.keys(), score_cutoff=85)
+    
     if best_match:
         answer = data[best_match[0]]
         await processing_message.edit_text(answer)
     else:
         if update.effective_user.id == ADMIN_ID:
-            not_found_message = "لم أجد سؤالاً مطابقاً. استخدم لوحة التحكم /admin لإضافة سؤال جديد."
+            not_found_message = "لم أجد سؤالاً مطابقاً بدقة. استخدم /admin لإضافة سؤال جديد."
         else:
-            not_found_message = "عذراً، لم أجد إجابة لهذا السؤال في قاعدة بياناتي الحالية."
+            not_found_message = "عذراً، لم أجد إجابة دقيقة لهذا السؤال في قاعدة بياناتي."
         await processing_message.edit_text(not_found_message)
 
 # --- لوحة تحكم الآدمن الاحترافية ---
@@ -104,23 +115,38 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✖️ إغلاق", callback_data='admin_close')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query: # إذا كان مصدر الطلب زراً (مثل زر الرجوع)
+    if update.callback_query:
         await update.callback_query.edit_message_text("⚙️ **لوحة تحكم الآدمن** ⚙️\n\nاختر الإجراء المطلوب:", reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text("⚙️ **لوحة تحكم الآدمن** ⚙️\n\nاختر الإجراء المطلوب:", reply_markup=reply_markup, parse_mode='Markdown')
     return PANEL_ROUTES
 
-async def close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("تم إغلاق لوحة التحكم.")
-    return ConversationHandler.END
+    
+    # تفكيك بيانات الزر لتحديد الإجراء والبيانات الإضافية
+    parts = query.data.split('_')
+    command = parts[0]
+    action = parts[1] if len(parts) > 1 else None
+    value = parts[2] if len(parts) > 2 else None
+
+    if command == 'admin':
+        if action == 'close':
+            await query.edit_message_text("تم إغلاق لوحة التحكم.")
+            return ConversationHandler.END
+        elif action == 'list':
+            await list_questions(update, context, page=int(value))
+            return PANEL_ROUTES
+        elif action == 'delete' and value == 'confirm':
+             return await delete_get_choice(update, context) # Transition to delete confirmation
+        # باقي الأوامر يتم معالجتها كـ Entry Points في المحادثات
+    return PANEL_ROUTES
 
 # --- عرض الأسئلة بنظام الصفحات ---
 @admin_only
-async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
     query = update.callback_query
-    page = int(query.data.split('_')[2])
     data = load_data()
     questions = list(data.items())
     if not questions:
@@ -142,8 +168,8 @@ async def list_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("🔙 رجوع للوحة التحكم", callback_data='admin_back_to_panel')])
     await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# --- محادثات الآدمن ---
-@admin_only
+# --- باقي دوال ومحادثات الآدمن ---
+
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -156,7 +182,11 @@ async def add_get_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ADD_ANSWER
 
 async def add_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    question = context.user_data['new_question']
+    question = context.user_data.get('new_question')
+    if not question:
+        await update.message.reply_text("حدث خطأ، لم يتم العثور على السؤال. تم إلغاء العملية.")
+        await admin_panel(update, context)
+        return ConversationHandler.END
     answer = update.message.text
     data = load_data()
     data[question] = answer
@@ -166,7 +196,6 @@ async def add_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await admin_panel(update, context) # العودة للوحة التحكم
     return ConversationHandler.END
 
-@admin_only
 async def photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -180,7 +209,6 @@ async def photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text('تم استلام الصورة. جارٍ قراءة النص...')
     try:
         extracted_text = pytesseract.image_to_string(Image.open(photo_path), lang='ara+eng')
-        os.remove(photo_path)
         if not extracted_text.strip():
             await update.message.reply_text('لم أتمكن من قراءة أي نص. حاول بصورة أوضح. تم إلغاء العملية.')
             await admin_panel(update, context)
@@ -190,21 +218,17 @@ async def photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     except Exception as e:
         logging.error(f"OCR Error: {e}")
         await update.message.reply_text('حدث خطأ أثناء قراءة الصورة. تم إلغاء العملية.')
-        if os.path.exists(photo_path): os.remove(photo_path)
-        await admin_panel(update, context)
         return ConversationHandler.END
+    finally:
+        if os.path.exists(photo_path):
+            os.remove(photo_path)
 
 async def photo_get_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['new_question'] = update.message.text
     await update.message.reply_text("تمام. الآن أرسل الجواب الصحيح.")
     return PHOTO_ANSWER
 
-async def photo_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await add_get_answer(update, context) # Re-use the same final step
-
-@admin_only
 async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # This now needs to be called by a button, so we handle query
     query = update.callback_query
     await query.answer()
     data = load_data()
@@ -214,7 +238,6 @@ async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     keyboard = []
     for q in data.keys():
-        # Callback data can only be 64 bytes, so we truncate the question if needed
         callback_data_q = (q[:50] + '..') if len(q) > 52 else q
         keyboard.append([InlineKeyboardButton(q, callback_data=f"admin_delete_confirm_{callback_data_q}")])
     keyboard.append([InlineKeyboardButton("🔙 إلغاء والرجوع", callback_data='admin_back_to_panel')])
@@ -228,7 +251,6 @@ async def delete_get_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     question_to_delete_prefix = query.data.replace('admin_delete_confirm_', '')
 
     data = load_data()
-    # Find the full question key from the prefix
     full_question_key = ""
     for q_key in data.keys():
         if q_key.startswith(question_to_delete_prefix):
@@ -242,7 +264,7 @@ async def delete_get_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     else:
         await query.edit_message_text(f"حدث خطأ، لم يتم العثور على السؤال للحذف.")
 
-    await asyncio.sleep(2) # Show the success/error message for a moment
+    await asyncio.sleep(2)
     await admin_panel(update, context)
     return ConversationHandler.END
 
@@ -250,18 +272,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if context.user_data:
         context.user_data.clear()
     await update.message.reply_text('تم إلغاء العملية الحالية.')
-    await admin_panel(update, context) # Return to admin panel
+    await admin_panel(update, context)
     return ConversationHandler.END
 
 # --- كتلة التنفيذ الرئيسية ---
 def main():
     if not TOKEN:
-        print("خطأ: لم يتم العثور على توكن البوت.")
+        print("خطأ فادح: لم يتم العثور على توكن البوت.")
         return
     
     application = Application.builder().token(TOKEN).build()
 
-    # محادثة الآدمن الرئيسية التي توجه إلى المحادثات الأخرى
+    # محادثة الآدمن الرئيسية
     admin_handler = ConversationHandler(
         entry_points=[CommandHandler('admin', admin_panel)],
         states={
@@ -274,13 +296,11 @@ def main():
                 CallbackQueryHandler(admin_panel, pattern='^admin_back_to_panel$'),
             ],
             DELETE_CHOICE: [CallbackQueryHandler(delete_get_choice, pattern='^admin_delete_confirm_')],
-            # States for adding text
             ADD_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_question)],
             ADD_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_answer)],
-            # States for adding from photo
             PHOTO_RECEIVE: [MessageHandler(filters.PHOTO, photo_receive)],
             PHOTO_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, photo_get_question)],
-            PHOTO_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, photo_get_answer)],
+            PHOTO_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_answer)],
         },
         fallbacks=[CommandHandler('cancel', cancel), CommandHandler('admin', admin_panel)],
     )
@@ -289,7 +309,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_question))
     
-    print("بوت بسام يعمل الآن بالحزمة الاحترافية الكاملة...")
+    print("بوت بسام يعمل الآن بالنسخة المحسنة والأكثر استقراراً...")
     application.run_polling()
 
 if __name__ == '__main__':
