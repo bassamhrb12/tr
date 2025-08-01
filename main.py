@@ -82,14 +82,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_regular_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text.strip()
     processing_message = await update.message.reply_text("⏳ جاري البحث عن إجابة...")
-    await asyncio.sleep(1) # تأخير بسيط لمحاكاة البحث
+    await asyncio.sleep(1)
 
     data = load_data()
     if not data:
         await processing_message.edit_text("عذراً، قاعدة البيانات فارغة حالياً.")
         return
 
-    # تم رفع دقة البحث إلى 85 لتقليل الإجابات العشوائية
     best_match = process.extractOne(question, data.keys(), score_cutoff=85)
     
     if best_match:
@@ -125,23 +124,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     
-    # تفكيك بيانات الزر لتحديد الإجراء والبيانات الإضافية
     parts = query.data.split('_')
-    command = parts[0]
     action = parts[1] if len(parts) > 1 else None
     value = parts[2] if len(parts) > 2 else None
 
-    if command == 'admin':
-        if action == 'close':
-            await query.edit_message_text("تم إغلاق لوحة التحكم.")
-            return ConversationHandler.END
-        elif action == 'list':
-            await list_questions(update, context, page=int(value))
-            return PANEL_ROUTES
-        elif action == 'delete' and value == 'confirm':
-             return await delete_get_choice(update, context) # Transition to delete confirmation
-        # باقي الأوامر يتم معالجتها كـ Entry Points في المحادثات
+    if action == 'list':
+        await list_questions(update, context, page=int(value))
+        return PANEL_ROUTES
     return PANEL_ROUTES
+
+# --- دالة إغلاق اللوحة (تمت إضافتها هنا) ---
+async def close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("تم إغلاق لوحة التحكم.")
+    return ConversationHandler.END
 
 # --- عرض الأسئلة بنظام الصفحات ---
 @admin_only
@@ -193,7 +190,7 @@ async def add_get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     save_data(data)
     await update.message.reply_text(f"✅ تم حفظ السؤال بنجاح!")
     context.user_data.clear()
-    await admin_panel(update, context) # العودة للوحة التحكم
+    await admin_panel(update, context)
     return ConversationHandler.END
 
 async def photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -283,7 +280,6 @@ def main():
     
     application = Application.builder().token(TOKEN).build()
 
-    # محادثة الآدمن الرئيسية
     admin_handler = ConversationHandler(
         entry_points=[CommandHandler('admin', admin_panel)],
         states={
@@ -292,7 +288,7 @@ def main():
                 CallbackQueryHandler(delete_start, pattern='^admin_delete_start$'),
                 CallbackQueryHandler(add_start, pattern='^admin_add_start$'),
                 CallbackQueryHandler(photo_start, pattern='^admin_photo_start$'),
-                CallbackQueryHandler(close_panel, pattern='^admin_close$'),
+                CallbackQueryHandler(close_panel, pattern='^admin_close$'), # تم تعريف الدالة الآن
                 CallbackQueryHandler(admin_panel, pattern='^admin_back_to_panel$'),
             ],
             DELETE_CHOICE: [CallbackQueryHandler(delete_get_choice, pattern='^admin_delete_confirm_')],
@@ -309,7 +305,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_question))
     
-    print("بوت بسام يعمل الآن بالنسخة المحسنة والأكثر استقراراً...")
+    print("بوت بسام يعمل الآن بالنسخة المصححة...")
     application.run_polling()
 
 if __name__ == '__main__':
