@@ -1,9 +1,10 @@
 python-telegram-bot
-requests
+google-generativeai
+sentence-transformers
+chromadb
+google-api-python-client
+python-dotenv
 pytesseract
 Pillow
 thefuzz
 python-Levenshtein
-Flask
-Gunicorn
-Flask-WTF
